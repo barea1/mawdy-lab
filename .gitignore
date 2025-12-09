@@ -1,0 +1,30 @@
+
+# --- Terraform ---
+# No versionar la carpeta de trabajo/local de Terraform
+.terraform/
+**/.terraform/*
+
+# Estados y backups (contienen datos del despliegue)
+*.tfstate
+*.tfstate.*
+
+# Archivos de crash
+crash.log
+
+# Variables sensibles (si usas .tfvars, mejor no subirlas)
+*.tfvars
+*.tfvars.json
+
+# Overrides locales
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Config local del CLI
+.terraformrc
+terraform.rc
+
+# Recomendación: SÍ versiona el lock de providers
+# (no lo ignores)
+# .terraform.lock.hcl
