@@ -65,7 +65,7 @@ jobs:
           push: true
           tags: ${{ env.ACR_LOGIN_SERVER }}/frontend-app:${{ github.sha }}
 
-      # 6. Desplegar BACKEND (Modo Robust: Azure CLI)
+      # 6. Desplegar BACKEND (Modo Robust: Azure CLI + Credenciales ACR)
       - name: Deploy Backend (via CLI)
         uses: azure/CLI@v1
         with:
@@ -74,12 +74,15 @@ jobs:
 
             echo "Desplegando Backend en entorno: ${{ env.ACA_ENV_ID }}"
 
-            # Creamos la app inyectando la Connection String completa como secreto
+            # AÑADIDO: --registry-server, --registry-username, --registry-password
             az containerapp create \
               --name backend-api \
               --resource-group ${{ env.RESOURCE_GROUP }} \
               --environment "${{ env.ACA_ENV_ID }}" \
               --image ${{ env.ACR_LOGIN_SERVER }}/backend-api:${{ github.sha }} \
+              --registry-server ${{ env.ACR_LOGIN_SERVER }} \
+              --registry-username ${{ steps.acr-creds.outputs.username }} \
+              --registry-password ${{ steps.acr-creds.outputs.password }} \
               --target-port 8080 \
               --ingress internal \
               --min-replicas 1 --max-replicas 1 \
@@ -96,18 +99,22 @@ jobs:
             echo "backend_url=https://$BACKEND_FQDN" >> $GITHUB_OUTPUT
             echo "Backend detectado en: https://$BACKEND_FQDN"
 
-      # 8. Desplegar FRONTEND (Modo Robust: Azure CLI)
+      # 8. Desplegar FRONTEND (Modo Robust: Azure CLI + Credenciales ACR)
       - name: Deploy Frontend (via CLI)
         uses: azure/CLI@v1
         with:
           inlineScript: |
             echo "Conectando Frontend a: ${{ steps.get-backend-url.outputs.backend_url }}"
 
+            # AÑADIDO: --registry-server, --registry-username, --registry-password
             az containerapp create \
               --name frontend-app \
               --resource-group ${{ env.RESOURCE_GROUP }} \
               --environment "${{ env.ACA_ENV_ID }}" \
               --image ${{ env.ACR_LOGIN_SERVER }}/frontend-app:${{ github.sha }} \
+              --registry-server ${{ env.ACR_LOGIN_SERVER }} \
+              --registry-username ${{ steps.acr-creds.outputs.username }} \
+              --registry-password ${{ steps.acr-creds.outputs.password }} \
               --target-port 80 \
               --ingress external \
               --min-replicas 1 --max-replicas 1 \
