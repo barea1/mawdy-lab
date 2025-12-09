@@ -1,0 +1,102 @@
+name: Deploy MAWDY Apps
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "src/**"
+      - ".github/workflows/**"
+  workflow_dispatch:
+
+# -----------------------------------------------------------------------------
+# CONFIGURACIÓN (Rellena esto con los outputs de Terraform)
+# -----------------------------------------------------------------------------
+env:
+  RESOURCE_GROUP: "rg-mawdy-lab-dev"
+  ACR_LOGIN_SERVER: "acrmawdylabdevexoy.azurecr.io"
+  ACA_ENV_ID: "/subscriptions/01a55008-9942-4e2a-83d8-e88e6f0f5c6c/resourceGroups/rg-mawdy-lab-dev/providers/Microsoft.App/managedEnvironments/aca-env-mawdy-lab-dev"
+  SQL_SERVER_FQDN: "sql-mawdy-lab-dev-exoy.database.windows.net"
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # 1. Login en Azure (Desbloquea el acceso a todo)
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      # 2. Obtener credenciales de ACR dinámicamente
+      # Como ya estamos logueados como "Contributor", podemos pedirle las llaves a Azure
+      - name: Get ACR Credentials
+        id: acr-creds
+        run: |
+          # Obtenemos el usuario y password del ACR usando la CLI
+          USERNAME=$(az acr credential show --name ${{ env.ACR_LOGIN_SERVER }} --query username -o tsv)
+          PASSWORD=$(az acr credential show --name ${{ env.ACR_LOGIN_SERVER }} --query passwords[0].value -o tsv)
+
+          # Los guardamos como secretos temporales para este workflow
+          echo "::add-mask::$PASSWORD"
+          echo "username=$USERNAME" >> $GITHUB_OUTPUT
+          echo "password=$PASSWORD" >> $GITHUB_OUTPUT
+
+      # 3. Login en Docker usando las credenciales obtenidas
+      - name: Login to ACR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.ACR_LOGIN_SERVER }}
+          username: ${{ steps.acr-creds.outputs.username }}
+          password: ${{ steps.acr-creds.outputs.password }}
+
+      # 4. Construir y Subir BACKEND
+      - name: Build & Push Backend
+        uses: docker/build-push-action@v5
+        with:
+          context: ./src/backend-api
+          push: true
+          tags: ${{ env.ACR_LOGIN_SERVER }}/backend-api:${{ github.sha }}
+
+      # 5. Construir y Subir FRONTEND
+      - name: Build & Push Frontend
+        uses: docker/build-push-action@v5
+        with:
+          context: ./src/frontend-app
+          push: true
+          tags: ${{ env.ACR_LOGIN_SERVER }}/frontend-app:${{ github.sha }}
+
+      # 6. Desplegar BACKEND (Construimos la Connection String aquí mismo)
+      - name: Deploy Backend Container App
+        uses: azure/container-apps-deploy-action@v1
+        with:
+          containerAppName: backend-api
+          resourceGroup: ${{ env.RESOURCE_GROUP }}
+          imageToDeploy: ${{ env.ACR_LOGIN_SERVER }}/backend-api:${{ github.sha }}
+          environmentResourceId: ${{ env.ACA_ENV_ID }}
+          ingress: internal
+          targetPort: 8080
+          # Construimos la cadena segura combinando variable pública + secreto
+          environmentVariables: SQL_CONNECTION_STRING=secretref:sql-conn-string
+          secrets: sql-conn-string=Server=tcp:${{ env.SQL_SERVER_FQDN }},1433;Initial Catalog=MawdyDB;Persist Security Info=False;User ID=sqladmin;Password=${{ secrets.SQL_PASSWORD }};MultipleActiveResultSets=False;Encrypt=True;TrustServerCertificate=False;Connection Timeout=30;
+
+      # 7. Obtener URL Backend
+      - name: Get Backend URL
+        id: get-backend-url
+        run: |
+          BACKEND_FQDN=$(az containerapp show --name backend-api --resource-group ${{ env.RESOURCE_GROUP }} --query properties.configuration.ingress.fqdn -o tsv)
+          echo "backend_url=https://$BACKEND_FQDN" >> $GITHUB_OUTPUT
+
+      # 8. Desplegar FRONTEND
+      - name: Deploy Frontend Container App
+        uses: azure/container-apps-deploy-action@v1
+        with:
+          containerAppName: frontend-app
+          resourceGroup: ${{ env.RESOURCE_GROUP }}
+          imageToDeploy: ${{ env.ACR_LOGIN_SERVER }}/frontend-app:${{ github.sha }}
+          environmentResourceId: ${{ env.ACA_ENV_ID }}
+          ingress: external
+          targetPort: 80
+          environmentVariables: API_BASE_URL=${{ steps.get-backend-url.outputs.backend_url }}
